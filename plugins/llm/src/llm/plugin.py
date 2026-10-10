@@ -4550,13 +4550,23 @@ class LLM(callbacks.Plugin):
                             "description": (
                                 "Channel name or glob (channels), channel (names, "
                                 "who, topic), or nick (whois, whowas, ctcp_*). "
-                                "Omit for network and history."
+                                + (
+                                    "Omit for network and history."
+                                    if history_on
+                                    else "Omit for network."
+                                )
                             ),
                         },
-                        "count": {
-                            "type": "integer",
-                            "description": "Lines of history to fetch (1-100).",
-                        },
+                        **(
+                            {
+                                "count": {
+                                    "type": "integer",
+                                    "description": "Lines of history to fetch (1-100).",
+                                }
+                            }
+                            if history_on
+                            else {}
+                        ),
                     },
                     "required": ["kind"],
                 },

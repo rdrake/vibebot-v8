@@ -238,7 +238,8 @@ class TestHistoryGate:
         fn = schemas[0]["function"]
 
         assert "history" not in fn["parameters"]["properties"]["kind"]["enum"]
-        assert "what did I miss" not in fn["description"]
+        assert "history" not in json.dumps(fn)
+        assert "count" not in fn["parameters"]["properties"]
 
     def test_off_refuses_without_sending(self, env) -> None:
         plugin, irc, _ = env
@@ -257,6 +258,7 @@ class TestHistoryGate:
 
         assert "history" in fn["parameters"]["properties"]["kind"]["enum"]
         assert "what did I miss" in fn["description"]
+        assert "count" in fn["parameters"]["properties"]
 
 
 class TestHistory:
