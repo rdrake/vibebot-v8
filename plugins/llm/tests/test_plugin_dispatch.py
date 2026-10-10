@@ -319,6 +319,7 @@ class TestOwnMsgidTracking:
         plugin._own_msgids_lock = threading.Lock()
         plugin._last_msgids = collections.OrderedDict()
         plugin._last_msgids_lock = threading.Lock()
+        plugin._last_msgids_dirty = {}
         irc = mocker.MagicMock()
         irc.nick = "botname"
         irc.network = "afternet"

@@ -985,6 +985,9 @@ class LLM(callbacks.Plugin):
             collections.OrderedDict()
         )
         self._last_msgids_lock = threading.Lock()
+        # Entries changed since the last _flush_last_msgids, with seen time.
+        self._last_msgids_dirty: dict[tuple[str, str, str], tuple[str, float]] = {}
+        self._load_last_msgids()
         # (network, channel) -> (model, time) of the last assistant reply, for
         # @model. In memory only: a restart forgets it, which @model says.
         self._served_models: dict[tuple[str, str], tuple[str, float]] = {}
@@ -1091,6 +1094,12 @@ class LLM(callbacks.Plugin):
             now=False,  # Don't run immediately on startup
         )
 
+        with contextlib.suppress(KeyError):
+            schedule.removeEvent("llm_last_msgids_flush")
+        schedule.addPeriodicEvent(
+            self._flush_last_msgids, 60, name="llm_last_msgids_flush", now=False
+        )
+
         # Safety poll for pending tasks (5-minute fallback for event-driven wakeups).
         # Initialize the in-flight gate BEFORE scheduling — a synchronous fire
         # during construction would NameError without the flag.
@@ -1190,6 +1199,8 @@ class LLM(callbacks.Plugin):
 
         # Clean up expired reminders from database
         if hasattr(self, "db"):
+            if hasattr(self, "_last_msgids_dirty"):
+                self._flush_last_msgids()
             self.db.delete_expired_reminders()
             # Close the main-thread DB connection. Worker-thread thread-local
             # connections are released as those threads exit; we don't track
@@ -1202,6 +1213,8 @@ class LLM(callbacks.Plugin):
             schedule.removeEvent("llm_file_cleanup")
         with contextlib.suppress(KeyError):
             schedule.removeEvent("llm_pending_tasks")
+        with contextlib.suppress(KeyError):
+            schedule.removeEvent("llm_last_msgids_flush")
         with contextlib.suppress(KeyError):
             schedule.removeEvent("llm_status_poll")
         with contextlib.suppress(KeyError):
@@ -2568,6 +2581,32 @@ class LLM(callbacks.Plugin):
             self._last_msgids.move_to_end(key)
             while len(self._last_msgids) > _LAST_MSGID_CAP:
                 self._last_msgids.popitem(last=False)
+            self._last_msgids_dirty[key] = (msgid, time.time())
+
+    def _load_last_msgids(self) -> None:
+        """Refill the react tool's msgid LRU from the database, so a restart
+        does not forget everyone who spoke before it."""
+        try:
+            rows = self.db.load_last_msgids(_LAST_MSGID_CAP)
+        except Exception:
+            self.log.exception("last_msgids load failed; starting empty")
+            return
+        with self._last_msgids_lock:
+            for network, channel, nick, msgid in rows:
+                self._last_msgids[(network, channel, nick)] = msgid
+
+    def _flush_last_msgids(self) -> None:
+        """Write LRU entries changed since the last flush. Runs every minute
+        and from die(), so a crash loses at most a minute of lines."""
+        with self._last_msgids_lock:
+            dirty, self._last_msgids_dirty = self._last_msgids_dirty, {}
+        if not dirty:
+            return
+        rows = [(n, c, k, m, ts) for (n, c, k), (m, ts) in dirty.items()]
+        try:
+            self.db.save_last_msgids(rows, keep=_LAST_MSGID_CAP)
+        except Exception:
+            self.log.exception("last_msgids flush failed (%s rows)", len(rows))
 
     def _is_reply_to_own_line(self, irc: callbacks.Irc, msg: IrcMsg) -> bool:
         """True when msg carries +draft/reply pointing at one of the bot's lines."""

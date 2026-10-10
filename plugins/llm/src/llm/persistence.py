@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from typing import NamedTuple
 
 # Schema version for future migrations
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 # Reminders older than 24 hours past their fire_at are considered expired
 EXPIRY_THRESHOLD_SECONDS = 86400  # 24 hours
@@ -640,6 +640,21 @@ class LLMDatabase:
                     nick TEXT PRIMARY KEY,
                     offset_seconds INTEGER,
                     probed_at REAL NOT NULL
+                );
+            """)
+            conn.commit()
+
+        if current_version < 22:
+            # Each speaker's latest msgid per channel, for the react tool, so
+            # a restart does not forget everyone who spoke before it.
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS last_msgids (
+                    network TEXT NOT NULL,
+                    channel TEXT NOT NULL,
+                    nick TEXT NOT NULL,
+                    msgid TEXT NOT NULL,
+                    seen_at REAL NOT NULL,
+                    PRIMARY KEY (network, channel, nick)
                 );
             """)
             conn.commit()
@@ -2320,6 +2335,34 @@ class LLMDatabase:
                 "probed_at = excluded.probed_at",
                 (nick.lower(), offset_seconds, time.time()),
             )
+
+    def save_last_msgids(self, rows: list[tuple[str, str, str, str, float]], *, keep: int) -> None:
+        """Upsert ``(network, channel, nick, msgid, seen_at)`` rows, then
+        trim the table to the ``keep`` most recently seen."""
+        with self._write_txn() as conn:
+            conn.executemany(
+                "INSERT INTO last_msgids (network, channel, nick, msgid, seen_at) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(network, channel, nick) DO UPDATE SET "
+                "msgid = excluded.msgid, seen_at = excluded.seen_at",
+                rows,
+            )
+            conn.execute(
+                "DELETE FROM last_msgids WHERE rowid NOT IN "
+                "(SELECT rowid FROM last_msgids ORDER BY seen_at DESC LIMIT ?)",
+                (keep,),
+            )
+
+    def load_last_msgids(self, limit: int) -> list[tuple[str, str, str, str]]:
+        """``(network, channel, nick, msgid)`` rows, oldest first, newest ``limit``."""
+        conn = self._connect()
+        rows = conn.execute(
+            "SELECT network, channel, nick, msgid FROM ("
+            "SELECT network, channel, nick, msgid, seen_at FROM last_msgids "
+            "ORDER BY seen_at DESC LIMIT ?) ORDER BY seen_at ASC",
+            (limit,),
+        ).fetchall()
+        return [(r[0], r[1], r[2], r[3]) for r in rows]
 
     # ------------------------------------------------------------------
     # Avatar persona operations (verse-only, separate from user_instructions)

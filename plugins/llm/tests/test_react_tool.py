@@ -209,3 +209,53 @@ class TestReactWiringAndDispatch:
 
         assert should_log is True
         plugin.llm_service.send_reaction.assert_not_called()
+
+
+class TestLastMsgidPersistence:
+    """The react tool's msgid memory survives a restart."""
+
+    def test_db_round_trip_keeps_newest_and_trims(self, test_db) -> None:
+        test_db.save_last_msgids(
+            [
+                ("afternet", "#a", "bob", "m1", 1.0),
+                ("afternet", "#a", "larry", "m2", 2.0),
+                ("afternet", "#a", "eve", "m3", 3.0),
+            ],
+            keep=2,
+        )
+        test_db.save_last_msgids([("afternet", "#a", "larry", "m4", 4.0)], keep=2)
+
+        assert test_db.load_last_msgids(10) == [
+            ("afternet", "#a", "eve", "m3"),
+            ("afternet", "#a", "larry", "m4"),
+        ]
+
+    def test_flush_writes_only_changes_then_clears(self, react_env) -> None:
+        plugin, irc, _ = react_env
+        plugin.inFilter(irc, privmsg("#test", "Larry", "hi", "larry-1"))
+
+        plugin._flush_last_msgids()
+        plugin._flush_last_msgids()
+
+        plugin.db.save_last_msgids.assert_called_once()
+        rows = plugin.db.save_last_msgids.call_args.args[0]
+        assert [r[:4] for r in rows] == [("afternet", "#test", "larry", "larry-1")]
+
+    def test_load_refills_the_lru(self, react_env) -> None:
+        plugin, irc, msg = react_env
+        plugin._last_msgids.clear()
+        plugin.db.load_last_msgids.return_value = [("afternet", "#test", "larry", "old-1")]
+
+        plugin._load_last_msgids()
+        payload = _call(plugin, irc, msg, emoji="🫡", nick="Larry")
+
+        assert payload["status"] == "ok"
+        plugin.llm_service.send_reaction.assert_called_once_with(irc, "#test", "old-1", "🫡")
+
+    def test_die_flushes(self, react_env) -> None:
+        plugin, irc, _ = react_env
+        plugin.inFilter(irc, privmsg("#test", "bob", "hi", "bob-1"))
+
+        plugin.die()
+
+        plugin.db.save_last_msgids.assert_called_once()

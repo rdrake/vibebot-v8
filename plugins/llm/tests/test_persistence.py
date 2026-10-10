@@ -1411,13 +1411,13 @@ class TestSchemaV3Migration:
         assert t.delivery_attempt_count == 0
         assert t.origin_request_id == ""
 
-    def test_schema_version_is_21(self, test_db: LLMDatabase) -> None:
-        """GIVEN a fresh database WHEN opened THEN schema version is 21."""
+    def test_schema_version_is_22(self, test_db: LLMDatabase) -> None:
+        """GIVEN a fresh database WHEN opened THEN schema version is 22."""
         conn = test_db._connect()
         try:
             row = conn.execute("PRAGMA user_version").fetchone()
             assert row is not None
-            assert row[0] == 21
+            assert row[0] == 22
         finally:
             conn.close()
 
