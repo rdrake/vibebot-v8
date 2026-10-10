@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- React remembers who spoke across restarts (`chat`)
 - React misses put ❌ on the request instead of faking success (`chat`)
 - Strip a reply's leading self speaker label (`chat`)
 - A bot replying to the bot's line does not address it (`chat`)
@@ -408,6 +409,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for the react miss (`changelog`)
 - Regenerate for the react tool (`changelog`)
 - Regenerate for @model (`changelog`)
 - Regenerate for the self-label strip (`changelog`)
