@@ -1354,6 +1354,19 @@ conf.registerChannelValue(
 
 conf.registerChannelValue(
     LLM,
+    "ircHistoryLookupEnabled",
+    registry.Boolean(
+        False,
+        _("""When True, irc_lookup also offers kind=history, which reads up to
+        100 recent lines of the channel from the server's chat history for
+        'what did I miss' questions (privacy: disabled by default since those
+        lines go to whichever provider serves this channel's models). Needs
+        ircLookupEnabled."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
     "reactEnabled",
     registry.Boolean(
         True,

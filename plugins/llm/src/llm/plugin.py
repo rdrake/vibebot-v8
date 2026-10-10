@@ -4491,6 +4491,9 @@ class LLM(callbacks.Plugin):
         """
         from .assistant import ToolResult
 
+        # kind=history ships channel chatter to the provider, so it is
+        # opt-in per channel and absent from the schema when off.
+        history_on = bool(channel) and bool(self.registryValue("ircHistoryLookupEnabled", channel))
         schema = {
             "type": "function",
             "function": {
@@ -4514,11 +4517,15 @@ class LLM(callbacks.Plugin):
                     "kind='network' gives user/oper/channel counts, the server "
                     "software and the admin contact. kind='ctcp_version' asks a "
                     "nick's IRC client what it is; kind='ctcp_ping' measures "
-                    "their lag (many clients ignore both). kind='history' "
-                    "returns the recent lines of THIS channel from the server's "
-                    "history, newest last (count up to 100, default 50): use it "
-                    "for 'what did I miss', 'summarize the last hour', or what "
-                    "someone said earlier."
+                    "their lag (many clients ignore both)."
+                    + (
+                        " kind='history' returns the recent lines of THIS "
+                        "channel from the server's history, newest last (count "
+                        "up to 100, default 50): use it for 'what did I miss', "
+                        "'summarize the last hour', or what someone said earlier."
+                        if history_on
+                        else ""
+                    )
                 ),
                 "parameters": {
                     "type": "object",
@@ -4535,7 +4542,7 @@ class LLM(callbacks.Plugin):
                                 "network",
                                 "ctcp_version",
                                 "ctcp_ping",
-                                "history",
+                                *(["history"] if history_on else []),
                             ],
                         },
                         "target": {
@@ -4626,6 +4633,10 @@ class LLM(callbacks.Plugin):
                     "nicks": result.nicks[:100],
                 }
                 return ToolResult(content=json.dumps(envelope))
+            if kind == "history" and not history_on:
+                return ToolResult(
+                    content=json.dumps({"error": "history lookup is turned off in this channel"})
+                )
             extra = self._irc_lookup_more(irc, kind, target, channel, arguments.get("count"))
             if extra is not None:
                 return ToolResult(content=json.dumps(extra))

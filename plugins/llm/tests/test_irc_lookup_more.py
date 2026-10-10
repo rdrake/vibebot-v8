@@ -221,7 +221,49 @@ class TestCtcp:
         assert not plugin._irc_queries.pending("ctcp-VERSION", "afternet", "larry")
 
 
+@pytest.fixture
+def history_env(env):
+    plugin, irc, msg = env
+    plugin.registryValue.side_effect = make_registry_side_effect(
+        {"ircLookupEnabled": True, "ircHistoryLookupEnabled": True}
+    )
+    return plugin, irc, msg
+
+
+class TestHistoryGate:
+    def test_off_by_default_hides_the_kind(self, env) -> None:
+        plugin, irc, _ = env
+
+        schemas, _ = plugin._build_irc_lookup_tool(irc, "#test")
+        fn = schemas[0]["function"]
+
+        assert "history" not in fn["parameters"]["properties"]["kind"]["enum"]
+        assert "what did I miss" not in fn["description"]
+
+    def test_off_refuses_without_sending(self, env) -> None:
+        plugin, irc, _ = env
+        irc.state.capabilities_ack = {"draft/chathistory"}
+
+        payload = lookup(plugin, irc, kind="history")
+
+        assert "turned off" in payload["error"]
+        irc.queueMsg.assert_not_called()
+
+    def test_on_advertises_the_kind(self, history_env) -> None:
+        plugin, irc, _ = history_env
+
+        schemas, _ = plugin._build_irc_lookup_tool(irc, "#test")
+        fn = schemas[0]["function"]
+
+        assert "history" in fn["parameters"]["properties"]["kind"]["enum"]
+        assert "what did I miss" in fn["description"]
+
+
 class TestHistory:
+    @pytest.fixture
+    def env(self, history_env):
+        return history_env
+
     @staticmethod
     def _batch(channel: str = "#test") -> Batch:
         return Batch(
