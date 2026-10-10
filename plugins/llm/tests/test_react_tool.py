@@ -81,8 +81,18 @@ class TestReactHandler:
 
         payload = _call(plugin, irc, msg, emoji="😂", nick="bob")
 
+        # A miss puts ❌ on the request and ends the turn like a reaction.
+        assert payload["status"] == "ok"
+        assert "no recent message from bob" in payload["message"]
+        plugin.llm_service.send_reaction.assert_called_once_with(irc, "#test", "trigger-1", "❌")
+
+    def test_miss_with_no_way_to_react_is_an_error(self, react_env) -> None:
+        plugin, irc, msg = react_env
+        plugin.llm_service.send_reaction.return_value = False
+
+        payload = _call(plugin, irc, msg, emoji="😂", nick="bob")
+
         assert payload == {"error": "no recent message from bob here"}
-        plugin.llm_service.send_reaction.assert_not_called()
 
     @pytest.mark.parametrize("emoji", ["", ":thumbsup:", "thumbs up", "👍 👍", "👍" * 9, "x"])
     def test_rejects_non_emoji_without_sending(self, react_env, emoji) -> None:
@@ -124,7 +134,9 @@ class TestReactHandler:
         plugin, irc, msg = react_env
         msg.args = ("testbot", "react to bob")
 
-        assert "error" in _call(plugin, irc, msg, emoji="👍", nick="bob")
+        _call(plugin, irc, msg, emoji="👍", nick="bob")
+
+        plugin.llm_service.send_reaction.assert_called_once_with(irc, "testnick", "trigger-1", "❌")
 
 
 class TestReactWiringAndDispatch:
@@ -167,3 +179,33 @@ class TestReactWiringAndDispatch:
         assert (stored, should_log) == ("[reacted 👍 to bob's message]", True)
         irc.reply.assert_not_called()
         irc.error.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "text", ["[reacted 🫡 to Larry's last message]", " [no recent message from bob]"]
+    )
+    def test_fake_react_note_is_dropped_for_a_cross(self, react_env, text) -> None:
+        """2026-10-10 #afternet: grok's react missed and it posted the stored
+        note shape as text, claiming a reaction that never happened."""
+        plugin, irc, msg = react_env
+        result = self._result(content=text, last_successful_tool="")
+
+        _, should_log = plugin._dispatch_assistant_reply(
+            irc, msg, result, nick="testnick", channel="#test", response=text
+        )
+
+        assert should_log is False
+        irc.reply.assert_not_called()
+        irc.queueMsg.assert_not_called()
+        plugin.llm_service.send_reaction.assert_called_once_with(irc, "#test", "trigger-1", "❌")
+
+    def test_ordinary_bracketed_reply_is_sent(self, react_env) -> None:
+        plugin, irc, msg = react_env
+        text = "[citation needed] that's not how kernels work"
+        result = self._result(content=text)
+
+        _, should_log = plugin._dispatch_assistant_reply(
+            irc, msg, result, nick="testnick", channel="#test", response=text
+        )
+
+        assert should_log is True
+        plugin.llm_service.send_reaction.assert_not_called()

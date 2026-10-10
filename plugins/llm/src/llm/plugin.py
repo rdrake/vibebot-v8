@@ -201,6 +201,10 @@ _LAST_MSGID_CAP = 2000
 # (👨‍👩‍👧, 🏳️‍🌈) take several; anything longer is text, not a reaction.
 _REACT_EMOJI_MAX_CHARS = 8
 
+# The stored react-only note ("[reacted 👍 to bob's message]"), as the model
+# reproduces it in plain text; see _dispatch_assistant_reply.
+_FAKE_REACT_NOTE_RE = re.compile(r"\s*\[(?:reacted|no recent message)\b", re.IGNORECASE)
+
 # Re-ask the network about an unflagged nick at most this often. A WHO per
 # stranger is cheap, one per stranger per hour is nothing, and the answer is
 # stable — nobody stops being a bot mid-afternoon.
@@ -4407,20 +4411,39 @@ class LLM(callbacks.Plugin):
             where = msg.args[0] if msg.args else ""
             in_channel = ircutils.isChannel(where)
             target = where if in_channel else msg.nick
+            trigger_msgid = (getattr(msg, "server_tags", None) or {}).get("msgid") or ""
             if not nick or ircutils.strEqual(nick, msg.nick):
                 # The requester's latest line is the one being answered.
                 who = msg.nick
-                msgid = (getattr(msg, "server_tags", None) or {}).get("msgid") or ""
-            elif not in_channel:
-                return ToolResult(
-                    content=json.dumps({"error": "in a private message you can only react to it"})
-                )
+                msgid = trigger_msgid
             else:
-                who = nick
-                key = (irc.network, ircutils.toLower(where), ircutils.toLower(nick))
-                with self._last_msgids_lock:
-                    msgid = self._last_msgids.get(key, "")
-                if not msgid:
+                msgid = ""
+                if in_channel:
+                    key = (irc.network, ircutils.toLower(where), ircutils.toLower(nick))
+                    with self._last_msgids_lock:
+                        msgid = self._last_msgids.get(key, "")
+                if msgid:
+                    who = nick
+                elif trigger_msgid and self.llm_service.send_reaction(
+                    irc, target, trigger_msgid, "❌"
+                ):
+                    # Nothing of theirs to point at (they have not spoken
+                    # since the bot started, or this is a PM): a ❌ on the
+                    # request says so, and ends the turn like any reaction.
+                    # Handing the model an error instead let grok write a
+                    # fake "[reacted 🫡 to Larry's last message]" line.
+                    return ToolResult(
+                        content=json.dumps(
+                            {
+                                "status": "ok",
+                                "message": (
+                                    f"no recent message from {nick} to react to; "
+                                    f"reacted ❌ to {msg.nick}'s request"
+                                ),
+                            }
+                        )
+                    )
+                else:
                     return ToolResult(
                         content=json.dumps({"error": f"no recent message from {nick} here"})
                     )
@@ -5044,6 +5067,16 @@ class LLM(callbacks.Plugin):
             detail = result.last_tool_message.strip()
             self.log.info("react-only reply %s/%s: %s", channel, nick, detail)
             return (f"[{detail}]" if detail else "[reacted]"), True
+
+        # Text shaped like that stored note is the model copying it, not a
+        # reaction: a real one short-circuits above with no text. 2026-10-10
+        # #afternet: grok's react missed and it posted "[reacted 🫡 to Larry's
+        # last message]". Send the ❌ it should have got, and store nothing so
+        # the fake line does not become the next exemplar.
+        if _FAKE_REACT_NOTE_RE.match(response or ""):
+            self.log.warning("fake react note dropped %s/%s: %r", channel, nick, response[:120])
+            self._react(irc, msg, "❌")
+            return response, False
 
         if not response or not response.strip():
             self._safe_error(irc, _("The model returned an empty response. Please try again."))
