@@ -407,6 +407,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for @model (`changelog`)
 - Regenerate for the self-label strip (`changelog`)
 - Regenerate for the search_web date (`changelog`)
 - Regenerate for Anthropic prompt caching (`changelog`)
@@ -690,6 +691,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- React tool adds an emoji reaction to a message (`chat`)
 - @model says which model answered the channel's last reply (`chat`)
 - Today's date in search_web's description for Anthropic models (`llm`)
 - Anthropic prompt caching (`llm`)
@@ -1267,6 +1269,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Tests
 
+- React guidance rides only with the react tool (`chat`)
 - Import the event helper the way the rest of the suite does (`verse`)
 - Reap plugins tests build and abandon, so their threads stop
 - LiteLLM now prices grok-imagine; keep the local table authoritative (`cost`)
