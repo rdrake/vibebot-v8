@@ -410,6 +410,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for chat effort (`changelog`)
 - Regenerate for delete and notify tools (`changelog`)
 - Regenerate for the irc_lookup kinds (`changelog`)
 - Regenerate for the empty-reply fix (`changelog`)
@@ -700,6 +701,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Gate irc_lookup history behind ircHistoryLookupEnabled (`chat`)
 - Low effort for Anthropic chat models (`chat`)
 - Delete_last_reply and notify_when_online tools (`chat`)
 - Irc_lookup gains whowas, who, topic, network, ctcp and history (`chat`)
