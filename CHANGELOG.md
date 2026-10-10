@@ -411,6 +411,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for history schema (`changelog`)
 - Regenerate for privacyOptInOnly (`changelog`)
 - Regenerate for history gate (`changelog`)
 - Regenerate for chat effort (`changelog`)
@@ -520,6 +521,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Documentation
 
+- Document every kind and the history privacy gate (`irc_lookup`)
 - BotLoopHostSuffixes also gates reply addressing (`chat`)
 - Generate llms.txt and llms-full.txt with mkdocs-llmstxt
 - Local-model setup, free Gemini key in env template, drop unused data dir (`ops`)
