@@ -1,0 +1,169 @@
+"""The react tool: msgid tracking, emoji validation, sends, and wiring."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+from llm.plugin import AssistantResult
+from supybot import ircmsgs
+
+from .conftest import make_registry_side_effect
+
+
+def privmsg(channel: str, nick: str, text: str, msgid: str | None) -> ircmsgs.IrcMsg:
+    m = ircmsgs.IrcMsg(command="PRIVMSG", args=(channel, text), prefix=f"{nick}!u@host")
+    if msgid:
+        m.server_tags["msgid"] = msgid
+    return m
+
+
+@pytest.fixture
+def react_env(plugin_env):
+    plugin, irc, msg = plugin_env
+    irc.network = "afternet"
+    msg.server_tags = {"msgid": "trigger-1"}
+    plugin.registryValue.side_effect = make_registry_side_effect({"reactEnabled": True})
+    plugin.llm_service.send_reaction.return_value = True
+    return plugin, irc, msg
+
+
+def _call(plugin, irc, msg, **args) -> dict:
+    _, handlers = plugin._build_react_tool(irc, msg)
+    return json.loads(handlers["react"](args).content)
+
+
+class TestLastMsgidTracking:
+    def test_infilter_records_latest_line_per_nick(self, react_env) -> None:
+        plugin, irc, _ = react_env
+        plugin.inFilter(irc, privmsg("#test", "Bob", "first", "m1"))
+        plugin.inFilter(irc, privmsg("#test", "Bob", "second", "m2"))
+
+        assert plugin._last_msgids[("afternet", "#test", "bob")] == "m2"
+
+    def test_ignores_pms_and_untagged_lines(self, react_env) -> None:
+        plugin, irc, _ = react_env
+        plugin.inFilter(irc, privmsg("testbot", "bob", "hi", "m1"))
+        plugin.inFilter(irc, privmsg("#test", "bob", "hi", None))
+
+        assert not plugin._last_msgids
+
+    def test_lru_is_bounded(self, react_env, mocker) -> None:
+        plugin, irc, _ = react_env
+        mocker.patch("llm.plugin._LAST_MSGID_CAP", 2)
+        for i in range(3):
+            plugin.inFilter(irc, privmsg("#test", f"n{i}", "x", f"m{i}"))
+
+        assert list(plugin._last_msgids.values()) == ["m1", "m2"]
+
+
+class TestReactHandler:
+    def test_no_nick_reacts_to_the_triggering_message(self, react_env) -> None:
+        plugin, irc, msg = react_env
+
+        payload = _call(plugin, irc, msg, emoji="👍")
+
+        assert payload == {"status": "ok", "message": "reacted 👍 to testnick's message"}
+        plugin.llm_service.send_reaction.assert_called_once_with(irc, "#test", "trigger-1", "👍")
+
+    def test_nick_reacts_to_their_latest_line(self, react_env) -> None:
+        plugin, irc, msg = react_env
+        plugin.inFilter(irc, privmsg("#test", "bob", "hot take", "bob-9"))
+
+        payload = _call(plugin, irc, msg, emoji="😂", nick="Bob")
+
+        assert payload["status"] == "ok"
+        plugin.llm_service.send_reaction.assert_called_once_with(irc, "#test", "bob-9", "😂")
+
+    def test_line_in_another_channel_does_not_count(self, react_env) -> None:
+        plugin, irc, msg = react_env
+        plugin.inFilter(irc, privmsg("#other", "bob", "hi", "bob-1"))
+
+        payload = _call(plugin, irc, msg, emoji="😂", nick="bob")
+
+        assert payload == {"error": "no recent message from bob here"}
+        plugin.llm_service.send_reaction.assert_not_called()
+
+    @pytest.mark.parametrize("emoji", ["", ":thumbsup:", "thumbs up", "👍 👍", "👍" * 9, "x"])
+    def test_rejects_non_emoji_without_sending(self, react_env, emoji) -> None:
+        plugin, irc, msg = react_env
+
+        payload = _call(plugin, irc, msg, emoji=emoji)
+
+        assert "error" in payload
+        plugin.llm_service.send_reaction.assert_not_called()
+
+    def test_accepts_zwj_sequence(self, react_env) -> None:
+        plugin, irc, msg = react_env
+
+        assert _call(plugin, irc, msg, emoji="🏳️‍🌈")["status"] == "ok"
+
+    def test_send_failure_is_an_error(self, react_env) -> None:
+        plugin, irc, msg = react_env
+        plugin.llm_service.send_reaction.return_value = False
+
+        payload = _call(plugin, irc, msg, emoji="👍")
+
+        assert "error" in payload
+
+    def test_no_trigger_msgid_is_an_error(self, react_env) -> None:
+        plugin, irc, msg = react_env
+        msg.server_tags = {}
+
+        assert "error" in _call(plugin, irc, msg, emoji="👍")
+        plugin.llm_service.send_reaction.assert_not_called()
+
+    def test_pm_reacts_to_the_sender(self, react_env) -> None:
+        plugin, irc, msg = react_env
+        msg.args = ("testbot", "react to this")
+
+        assert _call(plugin, irc, msg, emoji="👍")["status"] == "ok"
+        plugin.llm_service.send_reaction.assert_called_once_with(irc, "testnick", "trigger-1", "👍")
+
+    def test_pm_cannot_target_another_nick(self, react_env) -> None:
+        plugin, irc, msg = react_env
+        msg.args = ("testbot", "react to bob")
+
+        assert "error" in _call(plugin, irc, msg, emoji="👍", nick="bob")
+
+
+class TestReactWiringAndDispatch:
+    @staticmethod
+    def _result(**kw) -> AssistantResult:
+        base = {
+            "content": "ok",
+            "grounding_used": False,
+            "prompt_tokens": 1,
+            "completion_tokens": 1,
+            "cost": 0.0,
+            "model": "m",
+        }
+        return AssistantResult(**{**base, **kw})
+
+    def test_ask_advertises_react_when_enabled(self, react_env) -> None:
+        plugin, irc, msg = react_env
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = self._result()
+
+        plugin.ask(irc, msg, ["react to bob"])
+
+        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        assert "react" in [t["function"]["name"] for t in kwargs["extra_tools"]]
+        assert "react" in kwargs["extra_handlers"]
+
+    def test_react_only_turn_sends_nothing_and_stores_a_note(self, react_env) -> None:
+        plugin, irc, msg = react_env
+        result = self._result(
+            content="",
+            last_successful_tool="react",
+            last_tool_message="reacted 👍 to bob's message",
+        )
+
+        stored, should_log = plugin._dispatch_assistant_reply(
+            irc, msg, result, nick="testnick", channel="#test", response=""
+        )
+
+        assert (stored, should_log) == ("[reacted 👍 to bob's message]", True)
+        irc.reply.assert_not_called()
+        irc.error.assert_not_called()

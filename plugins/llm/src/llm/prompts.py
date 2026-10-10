@@ -161,6 +161,17 @@ IRC_LOOKUP_GUIDANCE = (
 )
 
 
+# Appended to the chat framework ONLY when the react tool is injected
+# (reactEnabled channels). A reaction ends the turn with no text, so the
+# model must not reach for it when the user wanted an answer.
+REACT_GUIDANCE = (
+    "- react adds an emoji reaction to a message and sends no text. Call it "
+    "when someone asks you to react to a message or to someone, or when an "
+    "emoji alone is the fitting reply. Never react instead of answering a "
+    "question or doing what was asked."
+)
+
+
 # Appended to the chat framework ONLY when the make_meme tool is injected
 # (memeEnabled channels). The model's job here is transcription, not taste:
 # the user names the template and the captions, the tool resolves the name

@@ -1352,6 +1352,19 @@ conf.registerChannelValue(
     ),
 )
 
+conf.registerChannelValue(
+    LLM,
+    "reactEnabled",
+    registry.Boolean(
+        True,
+        _("""When True, chat advertises the react tool so the model can add an
+        IRCv3 emoji reaction (+draft/react) to the message it is answering or
+        to another nick's latest line in the channel. A react-only turn sends
+        no text. Needs the message-tags capability; without it the tool
+        reports an error and the model answers in text."""),
+    ),
+)
+
 # ============================================================================
 # Limnoria tool bridge (Phase 1)
 # ============================================================================

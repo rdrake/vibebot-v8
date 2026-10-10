@@ -317,6 +317,8 @@ class TestOwnMsgidTracking:
         plugin = LLM.__new__(LLM)
         plugin._own_msgids = collections.OrderedDict()
         plugin._own_msgids_lock = threading.Lock()
+        plugin._last_msgids = collections.OrderedDict()
+        plugin._last_msgids_lock = threading.Lock()
         irc = mocker.MagicMock()
         irc.nick = "botname"
         irc.network = "afternet"

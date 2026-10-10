@@ -744,6 +744,8 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         # Opt-in per test: True here would add make_meme to every extra_tools
         # assertion in the irc_lookup wiring tests.
         "memeEnabled": False,
+        # Same reason: opt in per test (config.py defaults it True).
+        "reactEnabled": False,
         # story (mirrors draw — expensive image command)
         "storyRateLimitCount": 2,
         "storyRateLimitWindow": 300,

@@ -192,6 +192,15 @@ _DISPATCH_DEDUP_WINDOW = 12.0
 # older than that are rare enough to need the nick.
 _OWN_MSGID_CAP = 2000
 
+# How many (channel, nick) -> last msgid entries the react tool remembers.
+# One per recent speaker per channel; anyone quieter than that is too stale
+# to react to anyway.
+_LAST_MSGID_CAP = 2000
+
+# Longest emoji the react tool accepts, in code points. ZWJ sequences
+# (👨‍👩‍👧, 🏳️‍🌈) take several; anything longer is text, not a reaction.
+_REACT_EMOJI_MAX_CHARS = 8
+
 # Re-ask the network about an unflagged nick at most this often. A WHO per
 # stranger is cheap, one per stranger per hour is nothing, and the answer is
 # stable — nobody stops being a bot mid-afternoon.
@@ -966,6 +975,12 @@ class LLM(callbacks.Plugin):
         # Bounded LRU keyed (network, msgid); see _remember_own_msgid.
         self._own_msgids: collections.OrderedDict[tuple[str, str], None] = collections.OrderedDict()
         self._own_msgids_lock = threading.Lock()
+        # (network, channel, nick) -> msgid of that nick's latest line in the
+        # channel, for the react tool. Bounded LRU; see _remember_last_msgid.
+        self._last_msgids: collections.OrderedDict[tuple[str, str, str], str] = (
+            collections.OrderedDict()
+        )
+        self._last_msgids_lock = threading.Lock()
         # (network, channel) -> (model, time) of the last assistant reply, for
         # @model. In memory only: a restart forgets it, which @model says.
         self._served_models: dict[tuple[str, str], tuple[str, float]] = {}
@@ -2530,6 +2545,26 @@ class LLM(callbacks.Plugin):
             while len(self._own_msgids) > _OWN_MSGID_CAP:
                 self._own_msgids.popitem(last=False)
 
+    def _remember_last_msgid(self, irc: callbacks.Irc, msg: IrcMsg) -> None:
+        """Record the msgid of each channel PRIVMSG under its sender, so the
+        react tool can point at "bob's last message". The bot's own echoed
+        lines count too: reacting to them is a fair ask.
+        """
+        if msg.command != "PRIVMSG" or len(msg.args) < 2 or not msg.prefix:
+            return
+        channel = msg.args[0]
+        if not ircutils.isChannel(channel) or not ircutils.isUserHostmask(msg.prefix):
+            return
+        msgid = (getattr(msg, "server_tags", None) or {}).get("msgid")
+        if not msgid:
+            return
+        key = (irc.network, ircutils.toLower(channel), ircutils.toLower(msg.nick))
+        with self._last_msgids_lock:
+            self._last_msgids[key] = msgid
+            self._last_msgids.move_to_end(key)
+            while len(self._last_msgids) > _LAST_MSGID_CAP:
+                self._last_msgids.popitem(last=False)
+
     def _is_reply_to_own_line(self, irc: callbacks.Irc, msg: IrcMsg) -> bool:
         """True when msg carries +draft/reply pointing at one of the bot's lines."""
         target = (getattr(msg, "server_tags", None) or {}).get("+draft/reply")
@@ -2555,6 +2590,7 @@ class LLM(callbacks.Plugin):
            text readable for the LLM.
         """
         self._remember_own_msgid(irc, msg)
+        self._remember_last_msgid(irc, msg)
         if msg.command == "NOTICE":
             self._capture_ctcp_time(irc, msg)
         if msg.command != "PRIVMSG" or len(msg.args) < 2:
@@ -4311,6 +4347,97 @@ class LLM(callbacks.Plugin):
 
         return [schema], {"irc_lookup": handler}
 
+    @staticmethod
+    def _valid_react_emoji(emoji: str) -> bool:
+        """True for something that reads as one emoji, not as text.
+
+        ASCII is refused outright: a model handing over ":thumbsup:" or
+        "thumbs up" would otherwise go out as a literal-text reaction.
+        """
+        if not emoji or len(emoji) > _REACT_EMOJI_MAX_CHARS:
+            return False
+        return not any(ord(c) < 128 or c.isspace() for c in emoji)
+
+    def _build_react_tool(self, irc: callbacks.Irc, msg: IrcMsg):
+        """Build the per-request ``react`` tool schema + handler.
+
+        Same shape as :meth:`_build_irc_lookup_tool`. With no ``nick`` the
+        reaction lands on the message that triggered this turn; with one, on
+        that nick's latest line in this channel (see _remember_last_msgid).
+        Returns ``([schema], {"react": fn})``.
+        """
+        from .assistant import ToolResult
+
+        schema = {
+            "type": "function",
+            "function": {
+                "name": "react",
+                "description": (
+                    "Add an emoji reaction to a message in this channel. With no "
+                    "nick it reacts to the message you are answering; with a "
+                    "nick, to that person's most recent message here. A "
+                    "successful reaction IS your whole reply: no text is sent "
+                    "after it. Use one real emoji character, not a :name:."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "emoji": {"type": "string", "description": "One emoji, e.g. 👍"},
+                        "nick": {
+                            "type": "string",
+                            "description": (
+                                "Whose latest message to react to. Omit for the "
+                                "message you are answering."
+                            ),
+                        },
+                    },
+                    "required": ["emoji"],
+                },
+            },
+        }
+
+        def handler(arguments: dict[str, Any]) -> ToolResult:
+            emoji = str(arguments.get("emoji", "") or "").strip()
+            nick = str(arguments.get("nick", "") or "").strip()
+            self.log.info("react: emoji=%r nick=%r network=%s", emoji, nick, self._network_of(irc))
+            if not self._valid_react_emoji(emoji):
+                return ToolResult(
+                    content=json.dumps({"error": "emoji must be one emoji character, like 👍"})
+                )
+            where = msg.args[0] if msg.args else ""
+            in_channel = ircutils.isChannel(where)
+            target = where if in_channel else msg.nick
+            if not nick or ircutils.strEqual(nick, msg.nick):
+                # The requester's latest line is the one being answered.
+                who = msg.nick
+                msgid = (getattr(msg, "server_tags", None) or {}).get("msgid") or ""
+            elif not in_channel:
+                return ToolResult(
+                    content=json.dumps({"error": "in a private message you can only react to it"})
+                )
+            else:
+                who = nick
+                key = (irc.network, ircutils.toLower(where), ircutils.toLower(nick))
+                with self._last_msgids_lock:
+                    msgid = self._last_msgids.get(key, "")
+                if not msgid:
+                    return ToolResult(
+                        content=json.dumps({"error": f"no recent message from {nick} here"})
+                    )
+            if not msgid or not self.llm_service.send_reaction(irc, target, msgid, emoji):
+                return ToolResult(
+                    content=json.dumps(
+                        {"error": "reactions are unavailable here; answer in text instead"}
+                    )
+                )
+            return ToolResult(
+                content=json.dumps(
+                    {"status": "ok", "message": f"reacted {emoji} to {who}'s message"}
+                )
+            )
+
+        return [schema], {"react": handler}
+
     def _build_bridge_tool(self, irc, msg, channel: str, trace: list | None = None):
         """Build the per-request Limnoria bridge tool schemas + handlers.
 
@@ -4909,6 +5036,14 @@ class LLM(callbacks.Plugin):
         ):
             self.log.info("suppressing verse_storybook interim reply %s/%s", channel, nick)
             return response, True
+
+        # A react-only turn (see the short-circuit in assistant_completion):
+        # the emoji is the reply. Nothing goes to IRC, but the stored turn
+        # says what happened, for the same reason the reminder note does.
+        if result.last_successful_tool == "react" and not (response or "").strip():
+            detail = result.last_tool_message.strip()
+            self.log.info("react-only reply %s/%s: %s", channel, nick, detail)
+            return (f"[{detail}]" if detail else "[reacted]"), True
 
         if not response or not response.strip():
             self._safe_error(irc, _("The model returned an empty response. Please try again."))
@@ -7149,6 +7284,10 @@ class LLM(callbacks.Plugin):
                     lookup_schemas, lookup_handlers = self._build_irc_lookup_tool(irc)
                     bridge_schemas = [*(bridge_schemas or []), *lookup_schemas]
                     bridge_handlers = {**(bridge_handlers or {}), **lookup_handlers}
+                if self.registryValue("reactEnabled", channel):
+                    react_schemas, react_handlers = self._build_react_tool(irc, msg)
+                    bridge_schemas = [*(bridge_schemas or []), *react_schemas]
+                    bridge_handlers = {**(bridge_handlers or {}), **react_handlers}
                 if self.registryValue("memeEnabled", channel):
                     meme_schemas, meme_handlers = self._build_meme_tool(msg)
                     bridge_schemas = [*(bridge_schemas or []), *meme_schemas]

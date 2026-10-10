@@ -2090,6 +2090,63 @@ class TestMetaCompletion:
         # step_2 skipped — only the first (tool-calling) completion ran.
         assert completion.call_count == 1
 
+    def _run_react(self, service, mocker, handler, *, alongside: str | None = None):  # type: ignore[no-untyped-def]
+        tool_call = make_tool_call("react", {"emoji": "👍"}, call_id="call_r")
+        first = make_completion_response(alongside, tool_calls=[tool_call])
+        second = make_completion_response("Reacted with 👍!")
+        completion = mocker.patch(
+            "llm.service.litellm.completion", side_effect=[first, second, second]
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
+        mock_executor = mocker.MagicMock()
+        mock_executor.grounding_used = False
+        mock_executor.accumulated_prompt_tokens = 0
+        mock_executor.accumulated_completion_tokens = 0
+        mock_executor.accumulated_cost = 0.0
+        mocker.patch("llm.assistant.AssistantToolExecutor", return_value=mock_executor)
+        result = service.assistant_completion(
+            prompt="react to that",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            extra_handlers={"react": handler},
+        )
+        return result, completion
+
+    def test_react_short_circuits_with_no_text(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """A react-only step ends the turn: no narration step, no text, and
+        text written alongside the call is dropped too."""
+        handler = mocker.MagicMock(
+            return_value=ToolResult(
+                content='{"status": "ok", "message": "reacted 👍 to bob\'s message"}'
+            )
+        )
+
+        result, completion = self._run_react(
+            service, mocker, handler, alongside="I'll react to that."
+        )
+
+        assert result.content == ""
+        assert result.last_successful_tool == "react"
+        assert result.last_tool_message == "reacted 👍 to bob's message"
+        assert completion.call_count == 1
+
+    def test_failed_react_falls_through_to_text(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        handler = mocker.MagicMock(
+            return_value=ToolResult(content='{"error": "reactions are unavailable here"}')
+        )
+
+        result, completion = self._run_react(service, mocker, handler)
+
+        assert result.content == "Reacted with 👍!"
+        assert completion.call_count == 2
+
 
 class TestAssistantCompletionEchoGuard:
     """Tests for the degenerate-echo guard in assistant_completion.

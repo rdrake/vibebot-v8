@@ -54,6 +54,7 @@ from .prompts import (
     MEMORY_EXTRACTION_PROMPT,
     PENDING_TASKS_GUIDANCE,
     PROMPTS,
+    REACT_GUIDANCE,
 )
 from .tracing import TraceFilter, extract_server_headers, request_id
 from .typing_holds import TypingHolds
@@ -6026,6 +6027,11 @@ Examples (echo → action_prompt: ""):
                 (t.get("function", t) or {}).get("name") == "make_meme" for t in (extra_tools or [])
             ):
                 framework += "\n" + MEME_GUIDANCE
+            # And react (reactEnabled): when a bare emoji is the reply.
+            if any(
+                (t.get("function", t) or {}).get("name") == "react" for t in (extra_tools or [])
+            ):
+                framework += "\n" + REACT_GUIDANCE
             # Pending-task operating rules ride only when the reminder/
             # scheduled-task tools are in the request (chat profile with
             # pendingTasksEnabled on for the channel — the plugin passes
@@ -6613,6 +6619,7 @@ Examples (echo → action_prompt: ""):
                 # the short-circuit below has to deliver this step's images and
                 # nothing else.
                 step_image_urls: list[str] = []
+                react_ok = False
                 # Recorded before dispatch, not after: a call that raises or
                 # errors still means the model reached for a tool, and only a
                 # turn that reached for none can be complaining about nothing.
@@ -6704,6 +6711,8 @@ Examples (echo → action_prompt: ""):
                         last_tool_message = str(parsed.get("message", "")).strip()
                         if tc.function.name == "verse_storybook" and parsed.get("status") == "ok":
                             storybook_ok = True
+                        if tc.function.name == "react":
+                            react_ok = True
                         if tc.function.name == "generate_video":
                             video_tool_called = True
                         if tc.function.name in _IMAGE_MINTING_TOOLS:
@@ -6752,6 +6761,34 @@ Examples (echo → action_prompt: ""):
                         image_reworded=executor.image_reworded,
                         last_successful_tool="verse_storybook",
                         final_text_after_tools="",
+                    )
+
+                # Short-circuit: a step that only reacted is done — the emoji
+                # is the reply. step_2 would narrate it ("Reacted with 👍")
+                # into the channel, the way gemini narrated a reminder ack.
+                # Any text the model wrote alongside the call is dropped for
+                # the same reason. When every react failed the turn continues
+                # so the model can answer in text.
+                if react_ok and all(tc.function.name == "react" for tc in message.tool_calls):
+                    total_prompt_tokens += executor.accumulated_prompt_tokens
+                    total_completion_tokens += executor.accumulated_completion_tokens
+                    total_cost += executor.accumulated_cost
+                    self.log.info(
+                        "assistant_completion: short-circuit after react, skipping step_%i",
+                        _step + 2,
+                    )
+                    return AssistantResult(
+                        content="",
+                        prompt_tokens=total_prompt_tokens,
+                        completion_tokens=total_completion_tokens,
+                        cost=total_cost,
+                        model=model,
+                        grounding_used=executor.grounding_used,
+                        image_reworded=executor.image_reworded,
+                        last_successful_tool="react",
+                        last_tool_message=last_tool_message,
+                        final_text_after_tools="",
+                        was_verse=was_verse,
                     )
 
                 # Short-circuit: if this step called generate_image and
