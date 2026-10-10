@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- Irc_lookup schema omits every history mention when privacyOptInOnly (`chat`)
 - Empty-reply error reaches the user; chat cap 4096 (`chat`)
 - React remembers who spoke across restarts (`chat`)
 - React misses put ❌ on the request instead of faking success (`chat`)
@@ -410,6 +411,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for privacyOptInOnly (`changelog`)
 - Regenerate for history gate (`changelog`)
 - Regenerate for chat effort (`changelog`)
 - Regenerate for delete and notify tools (`changelog`)
