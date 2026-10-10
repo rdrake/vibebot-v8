@@ -8,6 +8,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Bug Fixes
 
+- Empty-reply error reaches the user; chat cap 4096 (`chat`)
 - React remembers who spoke across restarts (`chat`)
 - React misses put ❌ on the request instead of faking success (`chat`)
 - Strip a reply's leading self speaker label (`chat`)
@@ -409,6 +410,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for react persistence (`changelog`)
 - Regenerate for the react miss (`changelog`)
 - Regenerate for the react tool (`changelog`)
 - Regenerate for @model (`changelog`)
