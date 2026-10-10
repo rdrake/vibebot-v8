@@ -410,6 +410,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Chores
 
+- Regenerate for delete and notify tools (`changelog`)
 - Regenerate for the irc_lookup kinds (`changelog`)
 - Regenerate for the empty-reply fix (`changelog`)
 - Regenerate for react persistence (`changelog`)
@@ -699,6 +700,7 @@ own conventional-commit history (`type(scope): summary`).
 
 ### Features
 
+- Low effort for Anthropic chat models (`chat`)
 - Delete_last_reply and notify_when_online tools (`chat`)
 - Irc_lookup gains whowas, who, topic, network, ctcp and history (`chat`)
 - React tool adds an emoji reaction to a message (`chat`)
