@@ -55,7 +55,7 @@ A local server (Ollama, vLLM, LM Studio) takes no key from this plugin. Set its 
 
 Don't use `openai/<model>` with `OPENAI_API_BASE` for a local server. That redirects every OpenAI call in the bot and sends `OPENAI_API_KEY` to your box.
 
-The chat path calls tools, so the local model must support function calling. Each role has its own model setting (`assistantModel`, `searchModel`, `codeModel`, `memoryModel`, `verseModel` and the rest under [Model selection](#model-selection)). Any role left on a hosted provider still sends its requests there. That matters when you turn on `contextTrackAllMessages`: keep every model a channel uses local, or overheard lines can still reach a hosted provider.
+The chat path calls tools, so the local model must support function calling. Each role has its own model setting (`assistantModel`, `searchModel`, `codeModel`, `memoryModel`, `verseModel` and the rest under [Model selection](#model-selection)). Any role left on a hosted provider still sends its requests there. That matters when you turn off `privacyOptInOnly`: keep every model a channel uses local, or overheard lines can still reach a hosted provider.
 
 ### Opting in to Vertex AI
 
@@ -266,7 +266,7 @@ See [Memory promotion](memory-promotion.md) for how the two-stage pipeline works
 | `contextEnabled` | channel | `True` | Enable conversation context |
 | `contextMaxMessages` | channel | `20` | Messages kept in per-user history |
 | `contextTimeoutMinutes` | channel | `5` | Clear context after this much inactivity |
-| `contextTrackAllMessages` | channel | `False` | Track every channel message, not just bot interactions. Off by default for privacy: the lines go to whichever provider serves the channel's models. See [Running on local models](#running-on-local-models) |
+| `privacyOptInOnly` | channel | `True` | Send only lines addressed to the bot to the provider. Set `False` to track every channel message as context and let `irc_lookup` read the channel's server history (`kind=history`, up to 100 lines) for "what did I miss". Those lines go to whichever provider serves the channel's models. See [Running on local models](#running-on-local-models) |
 | `channelContextMaxMessages` | channel | `10` | Messages in the shared channel context |
 
 ## Rate limiting
@@ -326,7 +326,6 @@ Every failure falls back to local storage: endpoint unreachable, upload rejected
 | `bridgeScheduledTaskLimit` | channel | `5` | Active scheduled LLM tasks per creator per channel. `0` disables scheduling |
 | `bridgeDebugInChannel` | channel | `False` | Append a bridge-call debug footer to replies |
 | `ircLookupEnabled` | channel | `True` | Advertise the `irc_lookup` tool (live `LIST` / `NAMES`) to chat. `@channels` and `@names` work regardless |
-| `ircHistoryLookupEnabled` | channel | `False` | Let `irc_lookup` read the channel's recent server history (`kind=history`, up to 100 lines) for "what did I miss" questions. Off by default for privacy: the lines go to whichever provider serves the channel's models. Needs `ircLookupEnabled` |
 | `memeModel` | channel | `anthropic/claude-haiku-5-5` | Model that picks a template and writes captions when `@meme` (or `make_meme`'s `brief`) names no template the catalog knows. One JSON completion over the ~30 KB catalog per pick, about 8.5K prompt tokens, $0.01, 3 s. Empty falls back to `assistantModel`; grok-4-1-fast copies the template's example captions instead of writing new ones |
 | `memeEditModel` | global | `xai/grok-imagine-image` | Image-edit model for the picker's `draw` (and `make_meme`'s): the captioned meme goes to xAI's `/v1/images/edits` with the instruction. `xai/` only. About $0.02 per edit, refusals billed too |
 | `memeEnabled` | channel | `True` | `False` refuses `@meme` and hides the `make_meme` tool from chat |

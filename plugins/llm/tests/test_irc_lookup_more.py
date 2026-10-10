@@ -225,7 +225,7 @@ class TestCtcp:
 def history_env(env):
     plugin, irc, msg = env
     plugin.registryValue.side_effect = make_registry_side_effect(
-        {"ircLookupEnabled": True, "ircHistoryLookupEnabled": True}
+        {"ircLookupEnabled": True, "privacyOptInOnly": False}
     )
     return plugin, irc, msg
 
@@ -246,7 +246,7 @@ class TestHistoryGate:
 
         payload = lookup(plugin, irc, kind="history")
 
-        assert "turned off" in payload["error"]
+        assert "privacyOptInOnly" in payload["error"]
         irc.queueMsg.assert_not_called()
 
     def test_on_advertises_the_kind(self, history_env) -> None:

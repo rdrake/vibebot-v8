@@ -990,12 +990,15 @@ conf.registerChannelValue(
 
 conf.registerChannelValue(
     LLM,
-    "contextTrackAllMessages",
+    "privacyOptInOnly",
     registry.Boolean(
-        False,
-        _("""Track all channel messages for richer context (privacy: disabled by default
-        since every tracked line goes to whichever provider serves this channel's
-        models; safe to enable when all of them are local)"""),
+        True,
+        _("""Privacy: when True, only lines addressed to the bot (and its own
+        replies) reach the LLM provider. Set False to also feed every channel
+        message into the shared context and let irc_lookup read the channel's
+        server history (kind=history) for 'what did I miss'. Off, those lines
+        go to whichever provider serves this channel's models; turn it off only
+        when all of them are local or the channel has consented."""),
     ),
 )
 
@@ -1352,18 +1355,6 @@ conf.registerChannelValue(
     ),
 )
 
-conf.registerChannelValue(
-    LLM,
-    "ircHistoryLookupEnabled",
-    registry.Boolean(
-        False,
-        _("""When True, irc_lookup also offers kind=history, which reads up to
-        100 recent lines of the channel from the server's chat history for
-        'what did I miss' questions (privacy: disabled by default since those
-        lines go to whichever provider serves this channel's models). Needs
-        ircLookupEnabled."""),
-    ),
-)
 
 conf.registerChannelValue(
     LLM,

@@ -73,7 +73,7 @@ class TestDoPrivmsgIntegration:
 
         from .conftest import make_registry_side_effect, plugin_init_patches
 
-        registry_side_effect = make_registry_side_effect({"contextTrackAllMessages": True})
+        registry_side_effect = make_registry_side_effect({"privacyOptInOnly": False})
 
         mocker.patch.object(LLM, "registryValue", side_effect=registry_side_effect)
         plugin_init_patches(mocker)

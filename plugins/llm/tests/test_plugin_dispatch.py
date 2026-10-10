@@ -43,7 +43,10 @@ class TestDoPrivmsg:
         mocker.patch.object(LLM, "__init__", lambda self, irc: None)
         plugin = LLM.__new__(LLM)
         plugin.startup_time = time.time()
-        plugin.registryValue = mocker.MagicMock(return_value=True)
+        # Every key truthy except privacyOptInOnly, so chatter is tracked.
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=lambda key, *a: key != "privacyOptInOnly"
+        )
         plugin.context = mocker.MagicMock()
         plugin.llm_service = mocker.MagicMock()
         plugin.db = mocker.MagicMock()
@@ -115,9 +118,9 @@ class TestDoPrivmsg:
         """GIVEN tracking disabled WHEN doPrivmsg called THEN does not track."""
         plugin, mock_irc, mock_msg = plugin_with_mocks
 
-        # contextTrackAllMessages returns False
+        # Every key truthy, privacyOptInOnly included.
         def registry_side_effect(key, *args):
-            return key != "contextTrackAllMessages"
+            return True
 
         plugin.registryValue.side_effect = registry_side_effect
 
@@ -282,7 +285,9 @@ class TestDoPrivmsg:
         if signal == "host":
             mock_msg.prefix = "Ender!ender@ender.Bot.AfterNET.Org"
             plugin.registryValue.side_effect = lambda name, *_a, **_k: (
-                ["Bot.AfterNET.Org"] if name == "botLoopHostSuffixes" else True
+                ["Bot.AfterNET.Org"]
+                if name == "botLoopHostSuffixes"
+                else name != "privacyOptInOnly"
             )
         else:
             mock_msg.prefix = "Ender!ender@ender.Users.AfterNET.Org"
@@ -569,7 +574,10 @@ class TestInvalidCommand:
         plugin.llm_service = mocker.MagicMock()
         plugin.db = mocker.MagicMock()
         plugin.context = mocker.MagicMock()
-        plugin.registryValue = mocker.MagicMock(return_value=True)
+        # Every key truthy except privacyOptInOnly, so chatter is tracked.
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=lambda key, *a: key != "privacyOptInOnly"
+        )
         # Limnoria's MetaSynchronized requires this lock for synchronized methods
         plugin._MetaSynchronized_rlock = threading.RLock()
         # _dispatch_addressed_async's worker checks _llm_executor.closing
@@ -1174,7 +1182,10 @@ class TestNickAtEndAddressing:
         mocker.patch.object(LLM, "__init__", lambda self, irc: None)
         plugin = LLM.__new__(LLM)
         plugin.startup_time = time.time()
-        plugin.registryValue = mocker.MagicMock(return_value=True)
+        # Every key truthy except privacyOptInOnly, so chatter is tracked.
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=lambda key, *a: key != "privacyOptInOnly"
+        )
         plugin.context = mocker.MagicMock()
         plugin.llm_service = mocker.MagicMock()
         plugin.db = mocker.MagicMock()
@@ -1344,7 +1355,10 @@ class TestNickInMiddleOfAction:
         mocker.patch.object(LLM, "__init__", lambda self, irc: None)
         plugin = LLM.__new__(LLM)
         plugin.startup_time = time.time()
-        plugin.registryValue = mocker.MagicMock(return_value=True)
+        # Every key truthy except privacyOptInOnly, so chatter is tracked.
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=lambda key, *a: key != "privacyOptInOnly"
+        )
         plugin.context = mocker.MagicMock()
         plugin.llm_service = mocker.MagicMock()
         plugin.db = mocker.MagicMock()

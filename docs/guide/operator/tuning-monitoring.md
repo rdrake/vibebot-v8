@@ -38,12 +38,12 @@ Conversation context lets the bot follow recent exchanges in a channel.
 | `contextEnabled` | `True` | channel | Enable conversation context |
 | `contextMaxMessages` | `20` | channel | Messages kept in per-user history |
 | `contextTimeoutMinutes` | `5` | channel | Clear context after this much inactivity |
-| `contextTrackAllMessages` | `False` | channel | Track every channel message, not just bot interactions |
+| `privacyOptInOnly` | `True` | channel | Send only bot-addressed lines to the provider; `False` tracks every message and enables history lookup |
 | `channelContextMaxMessages` | `10` | channel | Messages in the shared channel context |
 
 The shared channel context is what lets the bot connect a question from one user with a follow-up from another.
 
-**Privacy note.** With `contextTrackAllMessages` enabled, every message in the channel is sent to third-party LLM providers as context. The setting is off by default. Enable it only where users know and consent.
+**Privacy note.** With `privacyOptInOnly` turned off, every message in the channel is sent to third-party LLM providers as context, and the bot can pull up to 100 lines of server history on request. The setting is on by default. Turn it off only where users know and consent.
 
 ## Limnoria tool bridge
 

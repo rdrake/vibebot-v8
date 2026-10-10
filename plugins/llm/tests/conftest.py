@@ -652,7 +652,7 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "contextTimeoutMinutes": 30,
         "contextEnabled": True,
         "channelContextMaxMessages": 10,
-        "contextTrackAllMessages": False,
+        "privacyOptInOnly": True,
         # Code command
         "codeModel": TEST_MODEL,
         "codeSystemPrompt": "You write code.",

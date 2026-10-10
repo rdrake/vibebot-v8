@@ -2732,7 +2732,7 @@ class LLM(callbacks.Plugin):
           ``_ask_impl``. The Limnoria command dispatcher is suppressed for
           these by ``inFilter``.
         - Other channel messages flow through the existing
-          ``contextTrackAllMessages`` capture logic.
+          ``privacyOptInOnly`` capture logic.
 
         Explicit prefix-char commands (e.g. ``@search`` or ``@later``) are
         handled entirely by Limnoria's dispatcher and short-circuit before
@@ -2801,7 +2801,7 @@ class LLM(callbacks.Plugin):
 
         if not self.registryValue("contextEnabled", channel):
             return
-        if not self.registryValue("contextTrackAllMessages", channel):
+        if self.registryValue("privacyOptInOnly", channel):
             return
 
         display_nick = msg.nick
@@ -4491,9 +4491,9 @@ class LLM(callbacks.Plugin):
         """
         from .assistant import ToolResult
 
-        # kind=history ships channel chatter to the provider, so it is
-        # opt-in per channel and absent from the schema when off.
-        history_on = bool(channel) and bool(self.registryValue("ircHistoryLookupEnabled", channel))
+        # kind=history ships channel chatter to the provider, so
+        # privacyOptInOnly keeps it out of the schema entirely.
+        history_on = bool(channel) and not self.registryValue("privacyOptInOnly", channel)
         schema = {
             "type": "function",
             "function": {
@@ -4635,7 +4635,9 @@ class LLM(callbacks.Plugin):
                 return ToolResult(content=json.dumps(envelope))
             if kind == "history" and not history_on:
                 return ToolResult(
-                    content=json.dumps({"error": "history lookup is turned off in this channel"})
+                    content=json.dumps(
+                        {"error": "history lookup is off: this channel is privacyOptInOnly"}
+                    )
                 )
             extra = self._irc_lookup_more(irc, kind, target, channel, arguments.get("count"))
             if extra is not None:

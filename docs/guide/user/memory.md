@@ -11,7 +11,7 @@ Every `@ask` or `@code` adds to a short-term conversation history, so you can as
 
 - Context is per user, per channel: your conversation in `#general` stays separate from `#dev`.
 - Context expires after a few minutes of inactivity (default: 5 minutes).
-- The bot can also weave in recent channel messages, so it can follow group conversations. By default that shared window holds only lines addressed to the bot and its own replies — the last 10. An operator can set `contextTrackAllMessages` to feed it every message in the channel, which also sends that chatter to the LLM provider.
+- The bot can also weave in recent channel messages, so it can follow group conversations. By default that shared window holds only lines addressed to the bot and its own replies — the last 10. An operator can turn off `privacyOptInOnly` to feed it every message in the channel and let the bot read the channel's server history for "what did I miss" questions. Both send that chatter to the LLM provider.
 
 Clear your context and start fresh with:
 
